@@ -22,12 +22,3 @@ Task Buddy is a robust, full-stack mobile productivity application built with Fl
 *   **Environment**: Developed and maintained within the `insti` project environment.
 
 ---
-
-## 🏗️ Project Structure
-
-The project utilizes a standard Flutter structure, with primary logic concentrated in the core library:
-```text
-lib/
-├── main.dart         # Core application logic and UI (Large-scale implementation)
-├── icons/            # Asset management for custom icons
-└── ...               # Additional configuration and resource files
