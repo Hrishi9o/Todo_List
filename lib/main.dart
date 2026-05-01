@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
-import 'dart:ui'; // ADDED: Required for ImageFilter and glassmorphism
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
@@ -11,15 +11,10 @@ import 'package:flutter_animate/flutter_animate.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
-  // Set transparent status bar for a premium edge-to-edge look
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(statusBarColor: Colors.transparent),
   );
-
-  // Initialize global database connection
   await LocalDatabase.init();
-
   runApp(const TaskBuddyMaxApp());
 }
 
@@ -89,7 +84,7 @@ class TaskItem {
   String description;
   DateTime deadline;
   String categoryId;
-  String priority; // Low, Medium, High
+  String priority; 
   bool isCompleted;
   int focusMinutesSpent;
 
@@ -127,6 +122,27 @@ class TaskItem {
       );
 }
 
+// NEW MODULE: Journal Entries
+class JournalEntry {
+  final String id;
+  final String content;
+  final DateTime date;
+
+  JournalEntry({required this.id, required this.content, required this.date});
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'content': content,
+        'date': date.toIso8601String(),
+      };
+
+  factory JournalEntry.fromJson(Map<String, dynamic> json) => JournalEntry(
+        id: json['id'],
+        content: json['content'],
+        date: DateTime.parse(json['date']),
+      );
+}
+
 /* =============================================================================
    2. DATABASE & STATE MANAGEMENT (Singleton Pattern)
 ============================================================================= */
@@ -138,6 +154,8 @@ class LocalDatabase {
   static final ValueNotifier<bool> isDarkMode = ValueNotifier(true);
   static final ValueNotifier<List<TaskItem>> currentTasks = ValueNotifier([]);
   static final ValueNotifier<List<TaskCategory>> currentCategories = ValueNotifier([]);
+  static final ValueNotifier<List<JournalEntry>> currentJournals = ValueNotifier([]);
+  static final ValueNotifier<int> waterIntake = ValueNotifier(0);
 
   static Future<void> init() async {
     _prefs = await SharedPreferences.getInstance();
@@ -192,6 +210,8 @@ class LocalDatabase {
     currentUser = null;
     currentTasks.value = [];
     currentCategories.value = [];
+    currentJournals.value = [];
+    waterIntake.value = 0;
     await _prefs.remove('active_user_id');
   }
 
@@ -219,6 +239,7 @@ class LocalDatabase {
   static void loadUserData() {
     if (currentUser == null) return;
 
+    // Load Tasks
     final tasksJson = _prefs.getString('tasks_${currentUser!.id}');
     if (tasksJson != null) {
       final List decoded = jsonDecode(tasksJson);
@@ -227,6 +248,7 @@ class LocalDatabase {
       currentTasks.value = [];
     }
 
+    // Load Categories
     final catsJson = _prefs.getString('cats_${currentUser!.id}');
     if (catsJson != null) {
       final List decoded = jsonDecode(catsJson);
@@ -240,6 +262,25 @@ class LocalDatabase {
       currentCategories.value = defaultCats;
       saveCategories();
     }
+
+    // Load Journals
+    final journalsJson = _prefs.getString('journals_${currentUser!.id}');
+    if (journalsJson != null) {
+      final List decoded = jsonDecode(journalsJson);
+      currentJournals.value = decoded.map((e) => JournalEntry.fromJson(e)).toList();
+    } else {
+      currentJournals.value = [];
+    }
+
+    // Load Water Tracker
+    final lastWaterDate = _prefs.getString('water_date_${currentUser!.id}');
+    final todayStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
+    if (lastWaterDate == todayStr) {
+      waterIntake.value = _prefs.getInt('water_count_${currentUser!.id}') ?? 0;
+    } else {
+      waterIntake.value = 0;
+      saveWaterIntake();
+    }
   }
 
   static Future<void> saveTasks() async {
@@ -252,6 +293,18 @@ class LocalDatabase {
     if (currentUser == null) return;
     final encoded = jsonEncode(currentCategories.value.map((e) => e.toJson()).toList());
     await _prefs.setString('cats_${currentUser!.id}', encoded);
+  }
+
+  static Future<void> saveJournals() async {
+    if (currentUser == null) return;
+    final encoded = jsonEncode(currentJournals.value.map((e) => e.toJson()).toList());
+    await _prefs.setString('journals_${currentUser!.id}', encoded);
+  }
+
+  static Future<void> saveWaterIntake() async {
+    if (currentUser == null) return;
+    await _prefs.setInt('water_count_${currentUser!.id}', waterIntake.value);
+    await _prefs.setString('water_date_${currentUser!.id}', DateFormat('yyyy-MM-dd').format(DateTime.now()));
   }
 
   static void addTask(TaskItem task) {
@@ -277,6 +330,18 @@ class LocalDatabase {
     currentTasks.value = newList;
     saveTasks();
   }
+
+  static void addJournal(JournalEntry entry) {
+    final newList = List<JournalEntry>.from(currentJournals.value);
+    newList.insert(0, entry);
+    currentJournals.value = newList;
+    saveJournals();
+  }
+
+  static void incrementWater() {
+    waterIntake.value++;
+    saveWaterIntake();
+  }
 }
 
 /* =============================================================================
@@ -300,7 +365,6 @@ class TaskBuddyMaxApp extends StatelessWidget {
           debugShowCheckedModeBanner: false,
           themeMode: isDark ? ThemeMode.dark : ThemeMode.light,
           
-          // --- LIGHT THEME ---
           theme: ThemeData(
             brightness: Brightness.light,
             colorSchemeSeed: const Color(0xFF4F46E5),
@@ -328,7 +392,6 @@ class TaskBuddyMaxApp extends StatelessWidget {
             ),
           ),
 
-          // --- DARK THEME ---
           darkTheme: ThemeData(
             brightness: Brightness.dark,
             colorSchemeSeed: const Color(0xFF6366F1),
@@ -384,7 +447,6 @@ class _SplashScreenState extends State<SplashScreen> {
 
   void _routeLogic() async {
     await Future.delayed(const Duration(milliseconds: 2500));
-    
     if (!mounted) return;
 
     if (LocalDatabase.currentUser != null) {
@@ -905,7 +967,7 @@ class _OtpScreenState extends State<OtpScreen> {
 }
 
 /* =============================================================================
-   7. MAIN DASHBOARD SCREEN
+   7. MAIN DASHBOARD SCREEN (Now with Quote & Hydration Engine)
 ============================================================================= */
 
 class DashboardScreen extends StatefulWidget {
@@ -916,6 +978,22 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen> {
   String _currentFilter = 'All'; 
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+
+  final List<String> dailyQuotes = [
+    "Discipline equals freedom.",
+    "Do the hard work, especially when you don't feel like it.",
+    "Amateurs sit and wait for inspiration, the rest of us just get up and go to work.",
+    "Focus on being productive instead of busy.",
+    "Great things are not done by impulse, but by a series of small things brought together."
+  ];
+
+  late String todayQuote;
+
+  @override
+  void initState() {
+    super.initState();
+    todayQuote = dailyQuotes[DateTime.now().day % dailyQuotes.length];
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -982,6 +1060,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
 
               SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                  child: Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).cardTheme.color,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: Colors.grey.withOpacity(0.1)),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.format_quote_rounded, color: Colors.orangeAccent, size: 28),
+                        const SizedBox(width: 12),
+                        Expanded(child: Text('"$todayQuote"', style: const TextStyle(fontStyle: FontStyle.italic, color: Colors.grey))),
+                      ],
+                    ),
+                  ),
+                ).animate().fadeIn(delay: 200.ms).slideY(begin: -0.1),
+              ),
+
+              SliverToBoxAdapter(
                 child: _buildDashboardBento(context, progress, tasks.length - doneCount)
                     .animate()
                     .fadeIn(duration: 400.ms)
@@ -1038,72 +1137,121 @@ class _DashboardScreenState extends State<DashboardScreen> {
         label: const Text('New Objective', style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 0.5)),
       )
       .animate()
-      .scale(delay: 600.ms, curve: Curves.easeOutBack, duration: 400.ms),
+      .scale(delay: 600.ms, curve: Curves.easeOutBack, duration: 400.ms)
+      .then().shimmer(duration: 1.seconds),
     );
   }
 
   Widget _buildDashboardBento(BuildContext context, double progress, int pendingCount) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
-      child: Container(
-        padding: const EdgeInsets.all(24),
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            colors: [Theme.of(context).colorScheme.primary, Theme.of(context).colorScheme.tertiary],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [Theme.of(context).colorScheme.primary, Theme.of(context).colorScheme.tertiary],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(32),
+              boxShadow: [
+                BoxShadow(color: Theme.of(context).colorScheme.primary.withOpacity(0.3), blurRadius: 20, offset: const Offset(0, 10))
+              ],
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Daily Completion', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w600, fontSize: 14)),
+                      const SizedBox(height: 8),
+                      Text('${(progress * 100).toInt()}%', style: const TextStyle(fontSize: 48, fontWeight: FontWeight.w900, color: Colors.white, height: 1.0)),
+                      const SizedBox(height: 12),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), borderRadius: BorderRadius.circular(20)),
+                        child: Text('$pendingCount pending tasks', style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
+                      ),
+                    ],
+                  ),
+                ),
+                
+                SizedBox(
+                  height: 90,
+                  width: 90,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      CircularProgressIndicator(
+                        value: progress,
+                        strokeWidth: 10,
+                        backgroundColor: Colors.white.withOpacity(0.2),
+                        valueColor: const AlwaysStoppedAnimation(Colors.white),
+                        strokeCap: StrokeCap.round,
+                      ),
+                      Center(
+                        child: Icon(
+                          progress >= 1.0 && pendingCount == 0 ? Icons.emoji_events_rounded : Icons.trending_up_rounded,
+                          color: Colors.white,
+                          size: 36,
+                        )
+                        .animate(target: progress >= 1.0 ? 1 : 0)
+                        .scale(curve: Curves.elasticOut),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
           ),
-          borderRadius: BorderRadius.circular(32),
-          boxShadow: [
-            BoxShadow(color: Theme.of(context).colorScheme.primary.withOpacity(0.3), blurRadius: 20, offset: const Offset(0, 10))
-          ],
-        ),
-        child: Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Daily Completion', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w600, fontSize: 14)),
-                  const SizedBox(height: 8),
-                  Text('${(progress * 100).toInt()}%', style: const TextStyle(fontSize: 48, fontWeight: FontWeight.w900, color: Colors.white, height: 1.0)),
-                  const SizedBox(height: 12),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), borderRadius: BorderRadius.circular(20)),
-                    child: Text('$pendingCount pending tasks', style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
-                  ),
-                ],
-              ),
-            ),
-            
-            SizedBox(
-              height: 90,
-              width: 90,
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  CircularProgressIndicator(
-                    value: progress,
-                    strokeWidth: 10,
-                    backgroundColor: Colors.white.withOpacity(0.2),
-                    valueColor: const AlwaysStoppedAnimation(Colors.white),
-                    strokeCap: StrokeCap.round,
-                  ),
-                  Center(
-                    child: Icon(
-                      progress >= 1.0 && pendingCount == 0 ? Icons.emoji_events_rounded : Icons.trending_up_rounded,
-                      color: Colors.white,
-                      size: 36,
-                    )
-                    .animate(target: progress >= 1.0 ? 1 : 0)
-                    .scale(curve: Curves.elasticOut),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
+          const SizedBox(height: 16),
+          // Water Tracker Bento Module
+          ValueListenableBuilder<int>(
+            valueListenable: LocalDatabase.waterIntake,
+            builder: (context, waterCount, _) {
+              return Container(
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).cardTheme.color,
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(color: Colors.lightBlueAccent.withOpacity(0.2), width: 1.5),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(color: Colors.lightBlueAccent.withOpacity(0.2), shape: BoxShape.circle),
+                          child: const Icon(Icons.water_drop_rounded, color: Colors.lightBlueAccent),
+                        ),
+                        const SizedBox(width: 16),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('Hydration Engine', style: TextStyle(fontWeight: FontWeight.bold)),
+                            Text('$waterCount / 8 Glasses', style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                          ],
+                        ),
+                      ],
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.add_circle_rounded, color: Colors.lightBlueAccent, size: 32),
+                      onPressed: () {
+                        HapticFeedback.lightImpact();
+                        LocalDatabase.incrementWater();
+                      },
+                    ).animate(key: ValueKey(waterCount)).scale(duration: 200.ms, curve: Curves.easeOutBack),
+                  ],
+                ),
+              );
+            }
+          ),
+        ],
       ),
     );
   }
@@ -1184,6 +1332,104 @@ class TaskListTile extends StatelessWidget {
 
     final isOverdue = !task.isCompleted && task.deadline.isBefore(DateTime.now());
 
+    Widget tileContent = Container(
+      decoration: BoxDecoration(
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.02), blurRadius: 10, offset: const Offset(0, 4))]
+      ),
+      child: Material(
+        color: task.isCompleted ? Theme.of(context).cardTheme.color!.withOpacity(0.6) : Theme.of(context).cardTheme.color,
+        borderRadius: BorderRadius.circular(24),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(24),
+          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => TaskEditorScreen(task: task))),
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                GestureDetector(
+                  onTap: () {
+                    HapticFeedback.lightImpact();
+                    task.isCompleted = !task.isCompleted;
+                    LocalDatabase.updateTask(task);
+                  },
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 300),
+                    curve: Curves.easeOutBack,
+                    height: 32, width: 32,
+                    decoration: BoxDecoration(
+                      color: task.isCompleted ? Colors.greenAccent : Colors.transparent,
+                      border: Border.all(color: task.isCompleted ? Colors.greenAccent : Colors.grey.withOpacity(0.5), width: 2),
+                      shape: BoxShape.circle,
+                    ),
+                    child: task.isCompleted ? const Icon(Icons.check_rounded, size: 20, color: Colors.black) : null,
+                  ),
+                ),
+                
+                const SizedBox(width: 16),
+                
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        task.title,
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          decoration: task.isCompleted ? TextDecoration.lineThrough : null,
+                          color: task.isCompleted ? Colors.grey : Theme.of(context).textTheme.bodyLarge?.color,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: Color(cat.colorValue).withOpacity(0.15),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(cat.name, style: TextStyle(color: Color(cat.colorValue), fontSize: 10, fontWeight: FontWeight.bold)),
+                          ),
+                          const SizedBox(width: 12),
+                          
+                          Icon(Icons.access_time_rounded, size: 14, color: isOverdue ? Colors.redAccent : Colors.grey),
+                          const SizedBox(width: 4),
+                          Text(
+                            DateFormat('MMM dd, hh:mm a').format(task.deadline),
+                            style: TextStyle(color: isOverdue ? Colors.redAccent : Colors.grey, fontSize: 12, fontWeight: isOverdue ? FontWeight.bold : FontWeight.w500),
+                          ),
+                          
+                          if (task.focusMinutesSpent > 0) ...[
+                            const Spacer(),
+                            const Icon(Icons.local_fire_department_rounded, size: 14, color: Colors.orangeAccent),
+                            const SizedBox(width: 2),
+                            Text('${task.focusMinutesSpent}m', style: const TextStyle(color: Colors.orangeAccent, fontSize: 12, fontWeight: FontWeight.bold))
+                          ]
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                
+                if (!task.isCompleted)
+                  Container(
+                    margin: const EdgeInsets.only(left: 12),
+                    height: 12, width: 12,
+                    decoration: BoxDecoration(color: _getPriorityColor(), shape: BoxShape.circle),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    if (task.isCompleted) {
+      tileContent = tileContent.animate(onPlay: (controller) => controller.repeat(reverse: true)).shimmer(duration: 3.seconds, color: Colors.white24);
+    }
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: Dismissible(
@@ -1200,102 +1446,10 @@ class TaskListTile extends StatelessWidget {
           LocalDatabase.deleteTask(task.id);
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Task removed'), duration: Duration(seconds: 2)));
         },
-        child: Container(
-          decoration: BoxDecoration(
-            boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.02), blurRadius: 10, offset: const Offset(0, 4))]
-          ),
-          child: Material(
-            color: Theme.of(context).cardTheme.color,
-            borderRadius: BorderRadius.circular(24),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(24),
-              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => TaskEditorScreen(task: task))),
-              child: Padding(
-                padding: const EdgeInsets.all(20),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    GestureDetector(
-                      onTap: () {
-                        HapticFeedback.lightImpact();
-                        task.isCompleted = !task.isCompleted;
-                        LocalDatabase.updateTask(task);
-                      },
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 300),
-                        curve: Curves.easeOutBack,
-                        height: 32, width: 32,
-                        decoration: BoxDecoration(
-                          color: task.isCompleted ? Colors.greenAccent : Colors.transparent,
-                          border: Border.all(color: task.isCompleted ? Colors.greenAccent : Colors.grey.withOpacity(0.5), width: 2),
-                          shape: BoxShape.circle,
-                        ),
-                        child: task.isCompleted ? const Icon(Icons.check_rounded, size: 20, color: Colors.black) : null,
-                      ),
-                    ),
-                    
-                    const SizedBox(width: 16),
-                    
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            task.title,
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                              decoration: task.isCompleted ? TextDecoration.lineThrough : null,
-                              color: task.isCompleted ? Colors.grey : Theme.of(context).textTheme.bodyLarge?.color,
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          Row(
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                decoration: BoxDecoration(
-                                  color: Color(cat.colorValue).withOpacity(0.15),
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: Text(cat.name, style: TextStyle(color: Color(cat.colorValue), fontSize: 10, fontWeight: FontWeight.bold)),
-                              ),
-                              const SizedBox(width: 12),
-                              
-                              Icon(Icons.access_time_rounded, size: 14, color: isOverdue ? Colors.redAccent : Colors.grey),
-                              const SizedBox(width: 4),
-                              Text(
-                                DateFormat('MMM dd, hh:mm a').format(task.deadline),
-                                style: TextStyle(color: isOverdue ? Colors.redAccent : Colors.grey, fontSize: 12, fontWeight: isOverdue ? FontWeight.bold : FontWeight.w500),
-                              ),
-                              
-                              if (task.focusMinutesSpent > 0) ...[
-                                const Spacer(),
-                                const Icon(Icons.local_fire_department_rounded, size: 14, color: Colors.orangeAccent),
-                                const SizedBox(width: 2),
-                                Text('${task.focusMinutesSpent}m', style: const TextStyle(color: Colors.orangeAccent, fontSize: 12, fontWeight: FontWeight.bold))
-                              ]
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                    
-                    if (!task.isCompleted)
-                      Container(
-                        margin: const EdgeInsets.only(left: 12),
-                        height: 12, width: 12,
-                        decoration: BoxDecoration(color: _getPriorityColor(), shape: BoxShape.circle),
-                      ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
+        child: tileContent,
       )
       .animate()
-      .fadeIn(delay: Duration(milliseconds: 100 * index), duration: 400.ms)
+      .fadeIn(delay: Duration(milliseconds: 50 * index), duration: 400.ms)
       .slideX(begin: 0.05, curve: Curves.easeOutCubic),
     );
   }
@@ -1771,11 +1925,43 @@ class _PomodoroScreenState extends State<PomodoroScreen> {
 }
 
 /* =============================================================================
-   11. ADVANCED ANALYTICS (GITHUB-STYLE HABIT MATRIX)
+   11. ADVANCED ANALYTICS (DEEP WORK & ALGORITHMIC STREAKS)
 ============================================================================= */
 
 class AnalyticsScreen extends StatelessWidget {
   const AnalyticsScreen({Key? key}) : super(key: key);
+
+  int _calculateCurrentStreak(List<TaskItem> tasks) {
+    if (tasks.isEmpty) return 0;
+    
+    final completedDates = tasks
+        .where((t) => t.isCompleted)
+        .map((t) => DateTime(t.deadline.year, t.deadline.month, t.deadline.day))
+        .toSet()
+        .toList();
+        
+    completedDates.sort((a, b) => b.compareTo(a)); 
+
+    if (completedDates.isEmpty) return 0;
+
+    int streak = 0;
+    DateTime currentDate = DateTime(DateTime.now().year, DateTime.now().month, DateTime.now().day);
+
+    if (completedDates.first.isBefore(currentDate.subtract(const Duration(days: 1)))) {
+      return 0; 
+    }
+
+    DateTime expectedDate = completedDates.first;
+    for (var date in completedDates) {
+      if (date.isAtSameMomentAs(expectedDate)) {
+        streak++;
+        expectedDate = expectedDate.subtract(const Duration(days: 1));
+      } else {
+        break;
+      }
+    }
+    return streak;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1787,27 +1973,30 @@ class AnalyticsScreen extends StatelessWidget {
           final int total = tasks.length;
           final int done = tasks.where((t) => t.isCompleted).length;
           final int focusMinutes = tasks.fold(0, (sum, t) => sum + t.focusMinutesSpent);
+          final int currentStreak = _calculateCurrentStreak(tasks);
+          
+          final double completionRate = total == 0 ? 0.0 : done / total;
+          
+          int highPriorityDone = tasks.where((t) => t.isCompleted && t.priority == 'High').length;
+          int medPriorityDone = tasks.where((t) => t.isCompleted && t.priority == 'Medium').length;
+          int lowPriorityDone = tasks.where((t) => t.isCompleted && t.priority == 'Low').length;
 
           return ListView(
             padding: const EdgeInsets.all(24),
             physics: const BouncingScrollPhysics(),
             children: [
-              // Premium Hero Stats
               Row(
                 children: [
-                  Expanded(child: _buildStatCard(context, 'Total Focus', '${(focusMinutes / 60).toStringAsFixed(1)}h', Colors.orangeAccent, Icons.local_fire_department_rounded)),
+                  Expanded(child: _buildMetricCard(context, 'Current Streak', '$currentStreak Days', Colors.deepPurpleAccent, Icons.local_fire_department_rounded)),
                   const SizedBox(width: 16),
-                  Expanded(child: _buildStatCard(context, 'Task Completion', '${total == 0 ? 0 : ((done / total) * 100).toInt()}%', Colors.blueAccent, Icons.analytics_rounded)),
+                  Expanded(child: _buildMetricCard(context, 'Deep Focus', '${(focusMinutes / 60).toStringAsFixed(1)}h', Colors.orangeAccent, Icons.headphones_rounded)),
                 ],
-              ).animate().fadeIn().slideY(),
+              ).animate().fadeIn(duration: 400.ms).slideY(begin: 0.1),
               
-              const SizedBox(height: 40),
-              
-              // Github Style Contribution Graph
-              const Text('Activity Matrix (Last 30 Days)', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 16),
+              const SizedBox(height: 32),
+
               Container(
-                padding: const EdgeInsets.all(24),
+                padding: const EdgeInsets.all(32),
                 decoration: BoxDecoration(
                   color: Theme.of(context).cardTheme.color,
                   borderRadius: BorderRadius.circular(32),
@@ -1816,17 +2005,66 @@ class AnalyticsScreen extends StatelessWidget {
                 ),
                 child: Column(
                   children: [
+                    const Text('Task Velocity', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 32),
+                    SizedBox(
+                      height: 200,
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          CustomPaint(
+                            size: const Size(200, 200),
+                            painter: _DonutChartPainter(
+                              high: highPriorityDone.toDouble(),
+                              medium: medPriorityDone.toDouble(),
+                              low: lowPriorityDone.toDouble(),
+                              empty: (total - done).toDouble(),
+                            ),
+                          ).animate().scale(curve: Curves.easeOutBack, duration: 800.ms),
+                          Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text('${(completionRate * 100).toInt()}%', style: const TextStyle(fontSize: 36, fontWeight: FontWeight.w900)),
+                              const Text('Completed', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                            ],
+                          ).animate().fadeIn(delay: 400.ms),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 32),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        _buildChartLegend('High', Colors.redAccent),
+                        _buildChartLegend('Medium', Colors.orangeAccent),
+                        _buildChartLegend('Low', Colors.greenAccent),
+                      ],
+                    ).animate().fadeIn(delay: 600.ms),
+                  ],
+                ),
+              ).animate().fadeIn(delay: 200.ms).slideY(begin: 0.1),
+
+              const SizedBox(height: 32),
+
+              const Text('Activity Matrix (Last 28 Days)', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).cardTheme.color,
+                  borderRadius: BorderRadius.circular(32),
+                  border: Border.all(color: Colors.grey.withOpacity(0.1)),
+                ),
+                child: Column(
+                  children: [
                     GridView.builder(
                       shrinkWrap: true,
                       physics: const NeverScrollableScrollPhysics(),
                       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: 7, // 7 days a week
-                        crossAxisSpacing: 8,
-                        mainAxisSpacing: 8,
+                        crossAxisCount: 7, crossAxisSpacing: 8, mainAxisSpacing: 8,
                       ),
-                      itemCount: 28, // 4 weeks
+                      itemCount: 28,
                       itemBuilder: (context, index) {
-                        // Simulating random activity for the matrix
                         final intensity = math.Random().nextDouble();
                         Color boxColor;
                         if (intensity < 0.3) {
@@ -1841,30 +2079,15 @@ class AnalyticsScreen extends StatelessWidget {
 
                         return AnimatedContainer(
                           duration: const Duration(milliseconds: 500),
-                          decoration: BoxDecoration(
-                            color: boxColor,
-                            borderRadius: BorderRadius.circular(8),
-                          ),
+                          decoration: BoxDecoration(color: boxColor, borderRadius: BorderRadius.circular(8)),
                         ).animate().scale(delay: Duration(milliseconds: 20 * index), curve: Curves.easeOutBack);
                       },
                     ),
-                    const SizedBox(height: 16),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        const Text('Less', style: TextStyle(fontSize: 12, color: Colors.grey)),
-                        const SizedBox(width: 8),
-                        _buildLegendBox(Colors.grey.withOpacity(0.2)),
-                        _buildLegendBox(Theme.of(context).colorScheme.primary.withOpacity(0.4)),
-                        _buildLegendBox(Theme.of(context).colorScheme.primary.withOpacity(0.7)),
-                        _buildLegendBox(Theme.of(context).colorScheme.primary),
-                        const SizedBox(width: 8),
-                        const Text('More', style: TextStyle(fontSize: 12, color: Colors.grey)),
-                      ],
-                    )
                   ],
                 ),
-              ).animate().fadeIn(delay: 200.ms),
+              ).animate().fadeIn(delay: 400.ms).slideY(begin: 0.1),
+              
+              const SizedBox(height: 60),
             ],
           );
         },
@@ -1872,15 +2095,17 @@ class AnalyticsScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildLegendBox(Color color) {
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 2),
-      width: 12, height: 12,
-      decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(3)),
+  Widget _buildChartLegend(String label, Color color) {
+    return Row(
+      children: [
+        Container(width: 12, height: 12, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+        const SizedBox(width: 8),
+        Text(label, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.grey)),
+      ],
     );
   }
 
-  Widget _buildStatCard(BuildContext context, String title, String val, Color color, IconData icon) {
+  Widget _buildMetricCard(BuildContext context, String title, String val, Color color, IconData icon) {
     return Container(
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
@@ -1894,11 +2119,54 @@ class AnalyticsScreen extends StatelessWidget {
           Icon(icon, color: color, size: 32),
           const SizedBox(height: 24),
           Text(title, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 14)),
-          const SizedBox(height: 8),
-          Text(val, style: TextStyle(color: color, fontSize: 36, fontWeight: FontWeight.w900, height: 1.0)),
+          const SizedBox(height: 4),
+          Text(val, style: TextStyle(color: color, fontSize: 32, fontWeight: FontWeight.w900, height: 1.0)),
         ],
       ),
     );
+  }
+}
+
+class _DonutChartPainter extends CustomPainter {
+  final double high;
+  final double medium;
+  final double low;
+  final double empty;
+
+  _DonutChartPainter({required this.high, required this.medium, required this.low, required this.empty});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final double total = high + medium + low + empty;
+    if (total == 0) return;
+
+    final Rect rect = Rect.fromLTWH(0, 0, size.width, size.height);
+    const double strokeWidth = 20.0;
+    
+    final Paint paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = strokeWidth
+      ..strokeCap = StrokeCap.round;
+
+    double startAngle = -math.pi / 2;
+
+    void drawSegment(double value, Color color) {
+      if (value == 0) return;
+      final sweepAngle = (value / total) * 2 * math.pi;
+      paint.color = color;
+      canvas.drawArc(rect, startAngle, sweepAngle - 0.05, false, paint);
+      startAngle += sweepAngle;
+    }
+
+    drawSegment(high, Colors.redAccent);
+    drawSegment(medium, Colors.orangeAccent);
+    drawSegment(low, Colors.greenAccent);
+    drawSegment(empty, Colors.grey.withOpacity(0.2));
+  }
+
+  @override
+  bool shouldRepaint(covariant _DonutChartPainter oldDelegate) {
+    return high != oldDelegate.high || medium != oldDelegate.medium || low != oldDelegate.low || empty != oldDelegate.empty;
   }
 }
 
@@ -1999,7 +2267,6 @@ class CustomAppDrawer extends StatelessWidget {
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       child: Column(
         children: [
-          // Expanded Drawer Header with animations
           Container(
             padding: const EdgeInsets.fromLTRB(24, 60, 24, 32),
             width: double.infinity,
@@ -2054,7 +2321,6 @@ class CustomAppDrawer extends StatelessWidget {
           
           const SizedBox(height: 16),
 
-          // Working Navigation Links
           Expanded(
             child: ListView(
               physics: const BouncingScrollPhysics(),
@@ -2084,6 +2350,13 @@ class CustomAppDrawer extends StatelessWidget {
                     Navigator.pop(context);
                     Navigator.push(context, MaterialPageRoute(builder: (_) => const FocusArcadeScreen()));
                   }, delay: 175,
+                ),
+                _buildDrawerTile(
+                  context, icon: Icons.book_rounded, title: 'Reflections Journal', color: Colors.purpleAccent,
+                  onTap: () {
+                    Navigator.pop(context);
+                    Navigator.push(context, MaterialPageRoute(builder: (_) => const JournalScreen()));
+                  }, delay: 185,
                 ),
                 _buildDrawerTile(
                   context, 
@@ -2130,7 +2403,6 @@ class CustomAppDrawer extends StatelessWidget {
             ),
           ),
 
-          // Logout
           Padding(
             padding: const EdgeInsets.all(16.0),
             child: ListTile(
@@ -2171,7 +2443,113 @@ class CustomAppDrawer extends StatelessWidget {
 }
 
 /* =============================================================================
-   13. GAMIFICATION & ACHIEVEMENT ENGINE (WEB & MOBILE OPTIMIZED)
+   12b. NEW FEATURE: REFLECTIONS JOURNAL
+============================================================================= */
+
+class JournalScreen extends StatefulWidget {
+  const JournalScreen({Key? key}) : super(key: key);
+  @override State<JournalScreen> createState() => _JournalScreenState();
+}
+
+class _JournalScreenState extends State<JournalScreen> {
+  final _textController = TextEditingController();
+
+  void _addJournal() {
+    if (_textController.text.trim().isEmpty) return;
+    HapticFeedback.mediumImpact();
+    final newEntry = JournalEntry(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      content: _textController.text.trim(),
+      date: DateTime.now(),
+    );
+    LocalDatabase.addJournal(newEntry);
+    _textController.clear();
+    FocusScope.of(context).unfocus();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Daily Reflections', style: TextStyle(fontWeight: FontWeight.bold))),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(24),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              decoration: BoxDecoration(
+                color: Theme.of(context).cardTheme.color,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: Colors.grey.withOpacity(0.2)),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _textController,
+                      maxLines: null,
+                      decoration: const InputDecoration(
+                        hintText: 'What is on your mind today?',
+                        border: InputBorder.none,
+                        focusedBorder: InputBorder.none,
+                        fillColor: Colors.transparent,
+                        filled: true,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.send_rounded, color: Colors.purpleAccent),
+                    onPressed: _addJournal,
+                  ),
+                ],
+              ),
+            ).animate().slideY(begin: -0.2).fadeIn(),
+          ),
+          
+          Expanded(
+            child: ValueListenableBuilder<List<JournalEntry>>(
+              valueListenable: LocalDatabase.currentJournals,
+              builder: (context, journals, _) {
+                if (journals.isEmpty) {
+                  return const Center(child: Text('Your journal is empty.', style: TextStyle(color: Colors.grey)));
+                }
+                return ListView.builder(
+                  physics: const BouncingScrollPhysics(),
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+                  itemCount: journals.length,
+                  itemBuilder: (context, index) {
+                    final j = journals[index];
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 16),
+                      padding: const EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).cardTheme.color,
+                        borderRadius: BorderRadius.circular(24),
+                        border: Border.all(color: Colors.purpleAccent.withOpacity(0.1)),
+                        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.02), blurRadius: 10)],
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(DateFormat('EEEE, MMM dd • hh:mm a').format(j.date), style: const TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold)),
+                          const SizedBox(height: 12),
+                          Text(j.content, style: const TextStyle(fontSize: 16, height: 1.4)),
+                        ],
+                      ),
+                    ).animate().fadeIn(delay: Duration(milliseconds: 100 * index)).slideX();
+                  },
+                );
+              },
+            ),
+          )
+        ],
+      ),
+    );
+  }
+}
+
+/* =============================================================================
+   13. GAMIFICATION & ACHIEVEMENT ENGINE
 ============================================================================= */
 
 class AchievementBoardScreen extends StatelessWidget {
@@ -2368,8 +2746,8 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
       '[AUTH] Validating active session token via AES-256...',
       '[AUTH] Token verified. User: ${LocalDatabase.currentUser?.id}',
       '[DATABASE] Compressing local SQLite nodes...',
-      '[DATABASE] Payload size: ${LocalDatabase.currentTasks.value.length * 1.4} KB',
-      '[NETWORK] Establishing TLS 1.3 Handshake with us-east-1...',
+      '[DATABASE] Payload size: ${(LocalDatabase.currentTasks.value.length + LocalDatabase.currentJournals.value.length) * 1.4} KB',
+      '[NETWORK] Establishing TLS 1.3 Handshake with ap-south-1...',
       '[NETWORK] Uplink secured. Transmitting encrypted chunks...',
       '[SYNC] Resolving entity collisions...',
       '[SYNC] No conflicts detected in Category logic.',
@@ -2503,8 +2881,10 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
               subtitle: const Text('This action cannot be undone.', style: TextStyle(color: Colors.redAccent)),
               onTap: () {
                 LocalDatabase.currentTasks.value = [];
+                LocalDatabase.currentJournals.value = [];
                 LocalDatabase.saveTasks();
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('All tasks wiped.')));
+                LocalDatabase.saveJournals();
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('All local data wiped.')));
               },
             ).animate().fadeIn(delay: 400.ms)
           ],
@@ -2515,7 +2895,7 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
 }
 
 /* =============================================================================
-   15. FOCUS ARCADE (MINI-GAMES FOR BREAKS)
+   15. FOCUS ARCADE (MINI-GAMES FOR BREAKS) - NOW WITH NEURO MATH
 ============================================================================= */
 
 class FocusArcadeScreen extends StatelessWidget {
@@ -2539,6 +2919,15 @@ class FocusArcadeScreen extends StatelessWidget {
             icon: Icons.bolt_rounded,
             color: Colors.orangeAccent,
             onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ReactionGameScreen())),
+          ),
+          const SizedBox(height: 24),
+          _buildGameCard(
+            context,
+            title: 'Neuro-Math Sprint',
+            desc: 'Fire up your prefrontal cortex with rapid calculations before deep work.',
+            icon: Icons.calculate_rounded,
+            color: Colors.pinkAccent,
+            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MathSprintScreen())),
           ),
           const SizedBox(height: 24),
           _buildGameCard(
@@ -2677,7 +3066,159 @@ class _ReactionGameScreenState extends State<ReactionGameScreen> {
   }
 }
 
-// Mini Game 2: Zen Breather
+// Mini Game 2: Neuro-Math Sprint
+class MathSprintScreen extends StatefulWidget {
+  const MathSprintScreen({Key? key}) : super(key: key);
+  @override State<MathSprintScreen> createState() => _MathSprintScreenState();
+}
+
+class _MathSprintScreenState extends State<MathSprintScreen> {
+  int _score = 0;
+  int _timeLeft = 30;
+  Timer? _timer;
+  bool _isPlaying = false;
+  
+  late int _num1;
+  late int _num2;
+  late String _operator;
+  late int _answer;
+  List<int> _options = [];
+
+  void _startGame() {
+    setState(() {
+      _score = 0;
+      _timeLeft = 30;
+      _isPlaying = true;
+    });
+    _generateProblem();
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (_timeLeft > 0) {
+        setState(() => _timeLeft--);
+      } else {
+        _endGame();
+      }
+    });
+  }
+
+  void _generateProblem() {
+    final rand = math.Random();
+    _num1 = rand.nextInt(20) + 1;
+    _num2 = rand.nextInt(20) + 1;
+    if (rand.nextBool()) {
+      _operator = '+';
+      _answer = _num1 + _num2;
+    } else {
+      // Avoid negatives for quick math
+      if (_num1 < _num2) {
+        final temp = _num1;
+        _num1 = _num2;
+        _num2 = temp;
+      }
+      _operator = '-';
+      _answer = _num1 - _num2;
+    }
+
+    _options = [_answer];
+    while (_options.length < 4) {
+      final wrongAns = _answer + rand.nextInt(20) - 10;
+      if (wrongAns != _answer && !_options.contains(wrongAns) && wrongAns >= 0) {
+        _options.add(wrongAns);
+      }
+    }
+    _options.shuffle();
+  }
+
+  void _submitAnswer(int picked) {
+    if (!_isPlaying) return;
+    if (picked == _answer) {
+      HapticFeedback.lightImpact();
+      setState(() => _score++);
+      _generateProblem();
+    } else {
+      HapticFeedback.heavyImpact();
+      setState(() => _timeLeft = math.max(0, _timeLeft - 3)); // Penalty
+    }
+  }
+
+  void _endGame() {
+    _timer?.cancel();
+    setState(() => _isPlaying = false);
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Neuro-Math Sprint')),
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 600), // Prevents massive stretching on Desktop/Web
+          child: SingleChildScrollView( // Allows scrolling if content is too tall
+            padding: const EdgeInsets.all(32),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min, // Ensures Center works properly
+              children: [
+                if (!_isPlaying && _score > 0) 
+                  Text('Final Score: $_score', style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.pinkAccent))
+                  .animate().scale(curve: Curves.elasticOut),
+                  
+                const SizedBox(height: 24),
+
+                if (!_isPlaying)
+                  FilledButton.icon(
+                    onPressed: _startGame,
+                    icon: const Icon(Icons.flash_on_rounded),
+                    label: const Text('START SPRINT'),
+                    style: FilledButton.styleFrom(backgroundColor: Colors.pinkAccent, padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 20)),
+                  ).animate().scale(curve: Curves.elasticOut)
+                else ...[
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Score: $_score', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+                      Text('00:${_timeLeft.toString().padLeft(2, '0')}', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: _timeLeft <= 5 ? Colors.redAccent : Colors.white)),
+                    ],
+                  ),
+                  const SizedBox(height: 60),
+                  Text('$_num1 $_operator $_num2 = ?', style: const TextStyle(fontSize: 64, fontWeight: FontWeight.w900))
+                      .animate(key: ValueKey('$_num1$_operator$_num2')).fadeIn().scale(curve: Curves.easeOutBack),
+                  const SizedBox(height: 60),
+                  GridView.count(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(), // Prevents nested scroll conflicts
+                    crossAxisCount: 2,
+                    mainAxisSpacing: 16,
+                    crossAxisSpacing: 16,
+                    childAspectRatio: 2,
+                    children: _options.map((opt) {
+                      return FilledButton(
+                        onPressed: () => _submitAnswer(opt),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: Theme.of(context).cardTheme.color,
+                          foregroundColor: Theme.of(context).textTheme.bodyLarge?.color,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        ),
+                        child: Text(opt.toString(), style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+                      ).animate().fadeIn();
+                    }).toList(),
+                  )
+                ]
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// Mini Game 3: Zen Breather
 class ZenBreatherScreen extends StatefulWidget {
   const ZenBreatherScreen({Key? key}) : super(key: key);
   @override State<ZenBreatherScreen> createState() => _ZenBreatherScreenState();
@@ -2759,7 +3300,6 @@ class PremiumUpgradeScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // FIXED: Used ImageFiltered instead of filter in BoxDecoration
     return Scaffold(
       body: Stack(
         children: [
